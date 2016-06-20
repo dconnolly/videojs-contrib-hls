@@ -20,26 +20,80 @@ const ntoh = function(word) {
     (word >>> 24);
 };
 
+// const stringFromBytes = function(bytes) {
+//   let result = '';
+
+//   for (let i = 0; i < bytes.length; i++) {
+//     result += String.fromCharCode(bytes[i]);
+//   }
+//   return result;
+// };
+
+const getWebCrypto = function() {
+  let _crypto = window ? window.crypto || window.msCrypto : crypto;
+
+  if (_crypto && !_crypto.hasOwnProperty('subtle') && _crypto.hasOwnProperty('webkitSubtle')) {
+    _crypto.subtle = _crypto.webkitSubtle;
+  }
+
+  return _crypto.subtle ? _crypto : null;
+};
+
 /**
  * Decrypt bytes using AES-128 with CBC and PKCS#7 padding.
  *
  * @param {Uint8Array} encrypted the encrypted bytes
- * @param {Uint32Array} key the bytes of the decryption key
+ * @param {Uint8Array} key the bytes of the decryption key
  * @param {Uint32Array} initVector the initialization vector (IV) to
  * use for the first round of CBC.
- * @return {Uint8Array} the decrypted bytes
+ * @return {Promise} that resolves with a Uint8Array the decrypted bytes
  *
  * @see http://en.wikipedia.org/wiki/Advanced_Encryption_Standard
  * @see http://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Cipher_Block_Chaining_.28CBC.29
  * @see https://tools.ietf.org/html/rfc2315
  */
-export const decrypt = function(encrypted, key, initVector) {
+export const decryptNative = function(encrypted, key, iv) {
+  let extractable = true;
+  let usages = ['decrypt'];
+  let crypto = getWebCrypto();
+  let keyPromise = crypto.subtle.importKey('raw', key, {name: 'AES-CBC'}, extractable, usages);
+
+  return keyPromise.then(function(importedKey) {
+    return crypto.subtle.decrypt({name: 'AES-CBC', iv: iv}, importedKey, encrypted);
+  }).catch(function(rejection) {
+    console.log(rejection);
+  }).then(function(plaintextArrayBuffer) {
+    return new Uint8Array(plaintextArrayBuffer);
+  });
+};
+
+/**
+ * Decrypt bytes using AES-128 with CBC and PKCS#7 padding.
+ *
+ * @param {Uint8Array} encrypted the encrypted bytes
+ * @param {Uint8Array} key the bytes of the decryption key
+ * @param {Uint32Array} initVector the initialization vector (IV) to
+ * use for the first round of CBC.
+ * @return {Promise} that resolves with a Uint8Array the decrypted bytes
+ *
+ * @see http://en.wikipedia.org/wiki/Advanced_Encryption_Standard
+ * @see http://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Cipher_Block_Chaining_.28CBC.29
+ * @see https://tools.ietf.org/html/rfc2315
+ */
+export const decryptNonNative = function(encrypted, key, initVector) {
+  let view = new DataView(key.buffer);
+  let littleEndianKey = new Uint32Array([
+    view.getUint32(0, true),
+    view.getUint32(4, true),
+    view.getUint32(8, true),
+    view.getUint32(12, true)
+  ]);
+  let decipher = new AES(Array.prototype.slice.call(littleEndianKey));
+
   // word-level access to the encrypted bytes
   let encrypted32 = new Int32Array(encrypted.buffer,
                                    encrypted.byteOffset,
                                    encrypted.byteLength >> 2);
-
-  let decipher = new AES(Array.prototype.slice.call(key));
 
   // byte and word-level access for the decrypted output
   let decrypted = new Uint8Array(encrypted.byteLength);
@@ -98,7 +152,29 @@ export const decrypt = function(encrypted, key, initVector) {
     init3 = encrypted3;
   }
 
-  return decrypted;
+  return Promise.resolve(unpad(decrypted));
+};
+
+/**
+ * Decrypt bytes using AES-128 with CBC and PKCS#7 padding.
+ * Chooses webcrypto or JS implementation where available.
+ *
+ * @param {Uint8Array} encrypted the encrypted bytes
+ * @param {Uint8Array} key the bytes of the decryption key
+ * @param {Uint32Array} initVector the initialization vector (IV) to
+ * use for the first round of CBC.
+ * @return {Promise} that resolves with a Uint8Array the decrypted bytes
+ *
+ * @see http://en.wikipedia.org/wiki/Advanced_Encryption_Standard
+ * @see http://en.wikipedia.org/wiki/Block_cipher_mode_of_operation#Cipher_Block_Chaining_.28CBC.29
+ * @see https://tools.ietf.org/html/rfc2315
+ */
+export const decrypt = function(encrypted, key, initVector) {
+  if (getWebCrypto()) {
+    return decryptNative(encrypted, key, initVector);
+  } else {
+    return decryptNonNative(encrypted, key, initVector);
+  }
 };
 
 /**
@@ -114,32 +190,41 @@ export const decrypt = function(encrypted, key, initVector) {
  */
 export class Decrypter {
   constructor(encrypted, key, initVector, done) {
-    let step = Decrypter.STEP;
-    let encrypted32 = new Int32Array(encrypted.buffer);
-    let decrypted = new Uint8Array(encrypted.byteLength);
-    let i = 0;
+    // let step = Decrypter.STEP;
+    // let encrypted32 = new Int32Array(encrypted.buffer);
+    // let decrypted = new Uint8Array(encrypted.byteLength);
+    // let i = 0;
 
-    this.asyncStream_ = new AsyncStream();
+    // this.asyncStream_ = new AsyncStream();
 
-    // split up the encryption job and do the individual chunks asynchronously
-    this.asyncStream_.push(this.decryptChunk_(encrypted32.subarray(i, i + step),
-                                              key,
-                                              initVector,
-                                              decrypted));
-    for (i = step; i < encrypted32.length; i += step) {
-      initVector = new Uint32Array([ntoh(encrypted32[i - 4]),
-                                    ntoh(encrypted32[i - 3]),
-                                    ntoh(encrypted32[i - 2]),
-                                    ntoh(encrypted32[i - 1])]);
-      this.asyncStream_.push(this.decryptChunk_(encrypted32.subarray(i, i + step),
-                                                key,
-                                                initVector,
-                                                decrypted));
-    }
-    // invoke the done() callback when everything is finished
-    this.asyncStream_.push(function() {
-      // remove pkcs#7 padding from the decrypted bytes
-      done(null, unpad(decrypted));
+    // // split up the encryption job and do the individual chunks asynchronously
+    // this.asyncStream_.push(this.decryptChunk_(encrypted32.subarray(i, i + step),
+    //                                           key,
+    //                                           initVector,
+    //                                           decrypted));
+    // for (i = step; i < encrypted32.length; i += step) {
+    //   initVector = new Uint32Array([ntoh(encrypted32[i - 4]),
+    //                                 ntoh(encrypted32[i - 3]),
+    //                                 ntoh(encrypted32[i - 2]),
+    //                                 ntoh(encrypted32[i - 1])]);
+    //   this.asyncStream_.push(this.decryptChunk_(encrypted32.subarray(i, i + step),
+    //                                             key,
+    //                                             initVector,
+    //                                             decrypted));
+    // }
+    // // invoke the done() callback when everything is finished
+    // this.asyncStream_.push(function() {
+    //   console.log(String.fromCharCode.apply(null, new Uint8Array(decrypted)));
+    //   // remove pkcs#7 padding from the decrypted bytes
+    //   done(null, unpad(decrypted));
+    // });
+
+    decrypt(encrypted, key, initVector).then(function(plaintextUint8) {
+      done(null, plaintextUint8);
+    }).catch(function(rejection) {
+      console.log(rejection);
+    }).then(function() {
+      return new Uint8Array();
     });
   }
 
@@ -157,10 +242,16 @@ export class Decrypter {
    * @private
    */
   decryptChunk_(encrypted, key, initVector, decrypted) {
-    return function() {
-      let bytes = decrypt(encrypted, key, initVector);
+    let promise = decrypt(encrypted, key, initVector);
 
-      decrypted.set(bytes, encrypted.byteOffset);
+    return function() {
+      promise.then(function(plaintextUint8) {
+        decrypted.set(plaintextUint8, encrypted.byteOffset);
+      }).catch(function(rejection) {
+        console.log(rejection);
+      }).then(function() {
+        return new Uint8Array();
+      });
     };
   }
 }

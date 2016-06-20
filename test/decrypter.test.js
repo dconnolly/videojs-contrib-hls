@@ -1,6 +1,5 @@
 // see docs/hlse.md for instructions on how test data was generated
 import QUnit from 'qunit';
-import {unpad} from 'pkcs7';
 import sinon from 'sinon';
 import {decrypt, Decrypter, AsyncStream} from '../src/decrypter';
 
@@ -14,10 +13,15 @@ const stringFromBytes = function(bytes) {
   return result;
 };
 
+const bytesToASCIIString = function(bytes) {
+  return String.fromCharCode.apply(null, new Uint8Array(bytes));
+};
+
 QUnit.module('Decryption');
-QUnit.test('decrypts a single AES-128 with PKCS7 block', function() {
+
+QUnit.test('decrypts a single AES-128 with PKCS7 block', function(assert) {
   let key = new Uint32Array([0, 0, 0, 0]);
-  let initVector = key;
+  let iv = key;
   // the string "howdy folks" encrypted
   let encrypted = new Uint8Array([
     0xce, 0x90, 0x97, 0xd0,
@@ -26,13 +30,19 @@ QUnit.test('decrypts a single AES-128 with PKCS7 block', function() {
     0x82, 0xa8, 0xf0, 0x67
   ]);
 
-  QUnit.deepEqual('howdy folks',
-                  stringFromBytes(unpad(decrypt(encrypted, key, initVector))),
-                  'decrypted with a byte array key'
-  );
+  assert.expect(1);
+
+  return decrypt(encrypted, key, iv).then(function(result) {
+    QUnit.deepEqual(bytesToASCIIString(result),
+                    'howdy folks',
+                    'decrypted with a byte array key'
+                   );
+  }).catch(function(result) {
+    console.log('decryption fail', result);
+  });
 });
 
-QUnit.test('decrypts multiple AES-128 blocks with CBC', function() {
+QUnit.test('decrypts multiple AES-128 blocks with CBC', function(assert) {
   let key = new Uint32Array([0, 0, 0, 0]);
   let initVector = key;
   // the string "0123456789abcdef01234" encrypted
@@ -48,47 +58,58 @@ QUnit.test('decrypts multiple AES-128 blocks with CBC', function() {
     0xe9, 0x4e, 0x29, 0xb3
   ]);
 
-  QUnit.deepEqual('0123456789abcdef01234',
-                  stringFromBytes(unpad(decrypt(encrypted, key, initVector))),
-                  'decrypted multiple blocks');
+  assert.expect(1);
+
+  return decrypt(encrypted, key, initVector).then(function(result) {
+    QUnit.deepEqual(stringFromBytes(result),
+                    '0123456789abcdef01234',
+                    'decrypted multiple blocks'
+                   );
+  });
 });
 
 QUnit.test(
 'verify that the deepcopy works by doing two decrypts in the same test',
-function() {
-  let key = new Uint32Array([0, 0, 0, 0]);
-  let initVector = key;
-  // the string "howdy folks" encrypted
-  let pkcs7Block = new Uint8Array([
-    0xce, 0x90, 0x97, 0xd0,
-    0x08, 0x46, 0x4d, 0x18,
-    0x4f, 0xae, 0x01, 0x1c,
-    0x82, 0xa8, 0xf0, 0x67
-  ]);
+  function(assert) {
+    let key = new Uint32Array([0, 0, 0, 0]);
+    let initVector = key;
 
-  QUnit.deepEqual('howdy folks',
-                  stringFromBytes(unpad(decrypt(pkcs7Block, key, initVector))),
-                  'decrypted with a byte array key'
-  );
+    // the string "howdy folks" encrypted
+    let pkcs7Block = new Uint8Array([
+      0xce, 0x90, 0x97, 0xd0,
+      0x08, 0x46, 0x4d, 0x18,
+      0x4f, 0xae, 0x01, 0x1c,
+      0x82, 0xa8, 0xf0, 0x67
+    ]);
 
-// the string "0123456789abcdef01234" encrypted
-  let cbcBlocks = new Uint8Array([
-    0x14, 0xf5, 0xfe, 0x74,
-    0x69, 0x66, 0xf2, 0x92,
-    0x65, 0x1c, 0x22, 0x88,
-    0xbb, 0xff, 0x46, 0x09,
+    // the string "0123456789abcdef01234" encrypted
+    let cbcBlocks = new Uint8Array([
+      0x14, 0xf5, 0xfe, 0x74,
+      0x69, 0x66, 0xf2, 0x92,
+      0x65, 0x1c, 0x22, 0x88,
+      0xbb, 0xff, 0x46, 0x09,
 
-    0x0b, 0xde, 0x5e, 0x71,
-    0x77, 0x87, 0xeb, 0x84,
-    0xa9, 0x54, 0xc2, 0x45,
-    0xe9, 0x4e, 0x29, 0xb3
-  ]);
+      0x0b, 0xde, 0x5e, 0x71,
+      0x77, 0x87, 0xeb, 0x84,
+      0xa9, 0x54, 0xc2, 0x45,
+      0xe9, 0x4e, 0x29, 0xb3
+    ]);
 
-  QUnit.deepEqual('0123456789abcdef01234',
-                  stringFromBytes(unpad(decrypt(cbcBlocks, key, initVector))),
-                  'decrypted multiple blocks');
+    let pkcs7Promise = decrypt(pkcs7Block, key, initVector);
+    let cbcPromise = decrypt(cbcBlocks, key, initVector);
 
-});
+    assert.expect(2);
+    return Promise.all([pkcs7Promise, cbcPromise]).then(function(results) {
+      QUnit.deepEqual(stringFromBytes(results[0]),
+                      'howdy folks',
+                      'decrypted with a byte array key'
+                     );
+      QUnit.deepEqual(stringFromBytes(results[1]),
+                      '0123456789abcdef01234',
+                      'decrypted multiple blocks'
+                     );
+    });
+  });
 
 QUnit.module('Incremental Processing', {
   beforeEach() {
@@ -139,7 +160,7 @@ QUnit.module('Incremental Decryption', {
   }
 });
 
-QUnit.test('asynchronously decrypts a 4-word block', function() {
+QUnit.test('asynchronously decrypts a 4-word block', function(assert) {
   let key = new Uint32Array([0, 0, 0, 0]);
   let initVector = key;
   // the string "howdy folks" encrypted
@@ -156,15 +177,18 @@ QUnit.test('asynchronously decrypts a 4-word block', function() {
                                     throw new Error(error);
                                   }
                                   decrypted = result;
+                                  console.log(stringFromBytes(decrypted));
                                 });
 
   QUnit.ok(!decrypted, 'asynchronously decrypts');
   this.clock.tick(decrypter.asyncStream_.delay * 2);
 
   QUnit.ok(decrypted, 'completed decryption');
-  QUnit.deepEqual('howdy folks',
-                  stringFromBytes(decrypted),
-                  'decrypts and unpads the result');
+  QUnit.deepEqual(
+    stringFromBytes(decrypted),
+    'howdy folks',
+    'decrypts and unpads the result'
+  );
 });
 
 QUnit.test('breaks up input greater than the step value', function() {

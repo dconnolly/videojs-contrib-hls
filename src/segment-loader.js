@@ -667,13 +667,7 @@ export default class SegmentLoader extends videojs.EventTarget {
         return this.trigger('error');
       }
 
-      view = new DataView(request.response);
-      segment.key.bytes = new Uint32Array([
-        view.getUint32(0),
-        view.getUint32(4),
-        view.getUint32(8),
-        view.getUint32(12)
-      ]);
+      segment.key.bytes = new Uint8Array(request.response);
 
       // if the media sequence is greater than 2^32, the IV will be incorrect
       // assuming 10s segments, that would be about 1300 years
